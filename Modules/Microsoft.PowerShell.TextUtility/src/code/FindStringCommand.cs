@@ -9,9 +9,9 @@ using System.Text.RegularExpressions;
 
 namespace Microsoft.PowerShell.TextUtility
 {
-    [Cmdlet(VerbsCommon.Select, "Text")]
+    [Cmdlet(VerbsCommon.Find, "String")]
     [OutputType(typeof(string))]
-    public sealed class SelectTextCommand : PSCmdlet
+    public sealed class FindStringCommand : PSCmdlet
     {
         /// <summary>
         /// Gets or sets the input object to select text.
