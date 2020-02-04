@@ -35,10 +35,35 @@ namespace Microsoft.PowerShell.TextUtility
         public SwitchParameter CaseSensitive;
 
         private Regex _regex;
+        private bool _isFormattingObjects = false;
         private List<PSObject> _psobjects = new List<PSObject>();
         private const string EmphasisColor = "\x1b[7;1;32m";
         private const string ResetColor = "\x1b[0m";
-        private RegexOptions _regexOptions = RegexOptions.IgnoreCase;
+        private RegexOptions _regexOptions = RegexOptions.IgnoreCase | RegexOptions.Multiline;
+        private readonly string FormatEntryScript = @"
+            function FindString($input, $pattern)
+            {
+                $formatTypes = @(
+                    'Microsoft.PowerShell.Commands.Internal.Format.FormatStartData'
+                    'Microsoft.PowerShell.Commands.Internal.Format.GroupStartData'
+                    'Microsoft.PowerShell.Commands.Internal.Format.GroupEndData'
+                    'Microsoft.PowerShell.Commands.Internal.Format.FormatEndData'
+                )
+
+                foreach ($entry in $input) {
+                    if ($formatTypes -Contains $entry.GetType()) {
+                        $entry
+                    }
+                    else {
+                        $entry.formatEntryInfo.formatPropertyFieldList | Where-Object propertyValue -match $pattern |
+                            ForEach-Object {
+                                $_.propertyValue = $_.propertyValue -replace ""($pattern)"", ""{EmphasisColor}`$1{ResetColor}""
+                                $entry
+                            }
+                    }
+                }
+            }
+        ".Replace("{EmphasisColor}",EmphasisColor).Replace("{ResetColor}",ResetColor);
         protected override void BeginProcessing()
         {
             if (CaseSensitive)
@@ -51,40 +76,66 @@ namespace Microsoft.PowerShell.TextUtility
 
         protected override void ProcessRecord()
         {
-            _psobjects.Add(InputObject);
+            if (_isFormattingObjects)
+            {
+                _psobjects.Add(InputObject);
+                return;
+            }
+
+            if (InputObject.TypeNames.Contains("Microsoft.PowerShell.Commands.Internal.Format.FormatStartData"))
+            {
+                _psobjects.Add(InputObject);
+                _isFormattingObjects = true;
+            }
+            else
+            {
+                using (var ps = System.Management.Automation.PowerShell.Create(RunspaceMode.CurrentRunspace))
+                {
+                    ps.AddCommand("Out-String").AddParameter("InputObject", InputObject);
+                    Collection<PSObject> results = ps.Invoke();
+                    foreach (var result in results)
+                    {
+                        foreach (var line in result.ToString().Split(new []{ Environment.NewLine }, StringSplitOptions.None))
+                        {
+                            var matches = _regex.Matches(line);
+                            if (matches.Count > 0)
+                            {
+                                var rmatches = new List<Match>();
+                                foreach (Match match in matches)
+                                {
+                                    rmatches.Add(match);
+                                }
+
+                                rmatches.Reverse();
+
+                                string matchString = line;
+                                foreach (Match match in rmatches)
+                                {
+                                    matchString = matchString.Insert(match.Index + match.Length, ResetColor);
+                                    matchString = matchString.Insert(match.Index, EmphasisColor);
+                                }
+
+                                WriteObject(matchString);
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         protected override void EndProcessing()
         {
-            using(var ps = System.Management.Automation.PowerShell.Create(RunspaceMode.CurrentRunspace))
+            using (var ps = System.Management.Automation.PowerShell.Create(RunspaceMode.CurrentRunspace))
             {
-                ps.AddCommand("Out-String").AddParameter("InputObject", _psobjects);
+                ps.AddScript(FormatEntryScript, useLocalScope: false).Invoke();
+                ps.Commands.Clear();
+                ps.AddCommand("FindString")
+                .AddParameter("input", _psobjects)
+                .AddParameter("pattern", Pattern);
                 Collection<PSObject> results = ps.Invoke();
-                foreach (PSObject result in results)
+                foreach (var result in results)
                 {
-                    foreach (var line in result.ToString().Split(new []{ Environment.NewLine }, StringSplitOptions.None))
-                    {
-                        var matches = _regex.Matches(line);
-                        if (matches.Count > 0)
-                        {
-                            var rmatches = new List<Match>();
-                            foreach (Match match in matches)
-                            {
-                                rmatches.Add(match);
-                            }
-
-                            rmatches.Reverse();
-
-                            string matchString = line;
-                            foreach (Match match in rmatches)
-                            {
-                                matchString = matchString.Insert(match.Index + match.Length, ResetColor);
-                                matchString = matchString.Insert(match.Index, EmphasisColor);
-                            }
-
-                            WriteObject(matchString);
-                        }
-                    }
+                    WriteObject(result);
                 }
             }
         }
