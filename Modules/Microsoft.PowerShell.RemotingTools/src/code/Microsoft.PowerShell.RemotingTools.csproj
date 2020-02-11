@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <OutputType>Library</OutputType>
+        <RootNamespace>Microsoft.PowerShell.RemotingTools</RootNamespace>
+        <AssemblyName>Microsoft.PowerShell.RemotingTools</AssemblyName>
+        <AssemblyVersion>0.1.0.0</AssemblyVersion>
+        <FileVersion>0.1.0</FileVersion>
+        <InformationalVersion>1.0.0</InformationalVersion>
+        <TargetFramework>netstandard2.0</TargetFramework>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="PowerShellStandard.Library" Version="5.1.0-*" />
+        <PackageReference Include="Microsoft.Identity.Client" Version="4.*" />
+        <PackageReference Include="System.Text.Json" Version="4.7.*" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <Content Include="../*">
+            <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+        </Content>
+    </ItemGroup>
+
+</Project>
