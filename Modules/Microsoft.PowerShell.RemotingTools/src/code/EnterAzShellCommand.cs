@@ -20,8 +20,6 @@ using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 
-using Microsoft.Identity.Client;
-
 namespace Microsoft.PowerShell.RemotingTools
 {
     public class IntToStringConverter : JsonConverter<int>
@@ -136,43 +134,39 @@ namespace Microsoft.PowerShell.RemotingTools
         public SwitchParameter Reset;
 
         [Parameter()]
-        public ShellType Shell = ShellType.PowerShell;
+        public ShellType Shell {
+            get
+            {
+                return _shellType;
+            }
+
+            set
+            {
+                _shellType = value;
+            }
+        }
 
         private static HttpClient _httpClient;
         private static string _accessToken;
         private static string _refreshToken;
+        private static ShellType _shellType = ShellType.PowerShell;
         private static ConcurrentQueue<byte[]> _inputQueue;
         private static CancellationTokenSource _cancelTokenSource;
-        private ClientWebSocket _socket;
-        private bool _stopProcessing = false;
+        private static ClientWebSocket _socket;
+        private const int BufferSize = 4096;
+        private static bool _stopProcessing = false;
         private const string ClientId = "245e1dee-74ef-4257-a8c8-8208296e1dfd"; //"e802b08b-2e1d-4cda-94b6-559b8b3f8dd6";
         private const string CommonTenant = "common";
         private const string userAgent = "PowerShell.Enter-AzShell";
         private static readonly string[] Scopes = new string[]{"https://management.azure.com/user_impersonation"};
-        private static StreamWriter _log;
-
-        private enum VirtualKeyCode
-        {
-            Left = 37,
-            Up = 38,
-            Right = 39,
-            Down = 40
-        }
-
-        private static readonly Dictionary<VirtualKeyCode, string> VirtualKeyCodeMap = new Dictionary<VirtualKeyCode, string>{
-            { VirtualKeyCode.Up, "\x001bOA" },
-            { VirtualKeyCode.Down, "\x001bOB" },
-            { VirtualKeyCode.Right, "\x001bOC" },
-            { VirtualKeyCode.Left, "\x001bOD" }
-        };
 
         protected override void BeginProcessing()
         {
             _httpClient = new HttpClient();
             _inputQueue = new ConcurrentQueue<byte[]>();
             _socket = new ClientWebSocket();
+            _socket.Options.SetBuffer(receiveBufferSize: BufferSize, sendBufferSize: BufferSize);
             _cancelTokenSource = new CancellationTokenSource();
-            _log = new StreamWriter("/Users/steve/test/azshell.log");
         }
 
         protected override void StopProcessing()
@@ -215,9 +209,6 @@ namespace Microsoft.PowerShell.RemotingTools
 
                 if (buffer.Count > 0)
                 {
-                    _log.WriteLine($"[Send: {BitConverter.ToString(buffer.ToArray())}]");
-                    _log.WriteLine($"[Send: {Encoding.UTF8.GetString(buffer.ToArray(), 0, buffer.Count)}]");
-                    _log.Flush();
                     Task.Run(() => _socket.SendAsync(
                         new ArraySegment<byte>(buffer.ToArray()),
                         WebSocketMessageType.Text,
@@ -234,29 +225,17 @@ namespace Microsoft.PowerShell.RemotingTools
             WriteVerbose($"Session closed: {_socket.State} => {_socket.CloseStatus} : {_socket.CloseStatusDescription}");
         }
 
-        private void InputThread(CancellationToken ct)
+        private static void InputThread(CancellationToken ct)
         {
-            var rawUI = Host.UI.RawUI;
+            var stdin = Console.OpenStandardInput(BufferSize);
+            var buffer = new byte[BufferSize];
 
             while (!ct.IsCancellationRequested)
             {
-                while (rawUI.KeyAvailable)
                 {
-                    var key = rawUI.ReadKey(ReadKeyOptions.AllowCtrlC | ReadKeyOptions.NoEcho);
-                    var bytes = Encoding.UTF8.GetBytes(new char[]{key.Character});
-//                    _log.WriteLine($"KeyInput: char {key.Character}, keycode {key.VirtualKeyCode} = {BitConverter.ToString(bytes)}");
-                    if (Enum.IsDefined(typeof(VirtualKeyCode), key.VirtualKeyCode) && VirtualKeyCodeMap.ContainsKey((VirtualKeyCode)key.VirtualKeyCode))
-                    {
-                        bytes = Encoding.UTF8.GetBytes(VirtualKeyCodeMap[(VirtualKeyCode)key.VirtualKeyCode]);
-//                        _log.WriteLine($"KeyMapTo: {BitConverter.ToString(bytes)}");
-                    }
-//                    _log.Flush();
-
-                    if (key.Character == 'q')
-                    {
-                        _log.Close();
-                    }
-
+                    var bytesRead = stdin.Read(buffer, 0, BufferSize);
+                    var bytes = new byte[bytesRead];
+                    Array.Copy(buffer, bytes, bytesRead);
                     _inputQueue.Enqueue(bytes);
                 }
 
@@ -264,7 +243,7 @@ namespace Microsoft.PowerShell.RemotingTools
             }
         }
 
-        private void ConnectWebSocket(string socketUri)
+        private static void ConnectWebSocket(string socketUri)
         {
             Task.Run(() => _socket.ConnectAsync(new Uri(socketUri), _cancelTokenSource.Token)).Wait();
 
@@ -274,7 +253,7 @@ namespace Microsoft.PowerShell.RemotingTools
             }
         }
 
-        private async void ReceiveWebSocket()
+        private static async void ReceiveWebSocket()
         {
             var incomingBuffer = new Byte[4096];
             while (!_stopProcessing && !_cancelTokenSource.IsCancellationRequested)
@@ -289,9 +268,6 @@ namespace Microsoft.PowerShell.RemotingTools
                         {
                             byte[] bytes = new byte[result.Count];
                             Array.Copy(incomingBuffer.ToArray(), bytes, result.Count);
-                            _log.WriteLine($"[Received: {BitConverter.ToString(bytes)}]");
-                            _log.WriteLine($"[Received: {Encoding.UTF8.GetString(incomingBuffer.ToArray(), 0, result.Count)}]");
-                            _log.Flush();
                             Console.Write(Encoding.UTF8.GetString(incomingBuffer.ToArray(), 0, result.Count));
                             Array.Clear(incomingBuffer, 0, result.Count);
                         }
@@ -308,7 +284,7 @@ namespace Microsoft.PowerShell.RemotingTools
             }
         }
 
-        private string SendWebRequest(string resourceUri, string body, string contentType, HttpMethod method, string token = null, bool ignoreError = false)
+        private static string SendWebRequest(string resourceUri, string body, string contentType, HttpMethod method, string token = null, bool ignoreError = false)
         {
             _httpClient.DefaultRequestHeaders.Clear();
             _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd(userAgent);
@@ -348,7 +324,7 @@ namespace Microsoft.PowerShell.RemotingTools
             return response;
         }
 
-        private void RefreshToken(string tenantId)
+        private static void RefreshToken(string tenantId)
         {
             string resourceUri = $"https://login.microsoftonline.com/{tenantId}/oauth2/token";
             const string resource = "https://management.core.windows.net/";
@@ -374,10 +350,15 @@ namespace Microsoft.PowerShell.RemotingTools
             return JsonSerializer.Deserialize<T>(readOnlySpan);
         }
 
-        private string RequestTerminal(string uri)
+        private static string RequestTerminal(string uri)
         {
-            var size = Host.UI.RawUI.WindowSize;
-            string resourceUri = $"{uri}/terminals?cols={size.Width}&rows={size.Height}&version=2019-01-01&shell=bash";
+            string shell = "pwsh";
+            if (_shellType == ShellType.Bash)
+            {
+                shell = "bash";
+            }
+
+            string resourceUri = $"{uri}/terminals?cols={Console.WindowWidth}&rows={Console.WindowHeight}&version=2019-01-01&shell={shell}";
             string response = SendWebRequest(
                 resourceUri: resourceUri,
                 body: string.Empty,
@@ -391,7 +372,7 @@ namespace Microsoft.PowerShell.RemotingTools
             return terminal.socketUri;
         }
 
-        private string GetTenantId()
+        private static string GetTenantId()
         {
             const string resourceUri = "https://management.azure.com/tenants?api-version=2018-01-01";
             string response = SendWebRequest(
@@ -413,7 +394,7 @@ namespace Microsoft.PowerShell.RemotingTools
             return tenant.value[0].tenantId;
         }
 
-        private string RequestCloudShell()
+        private static string RequestCloudShell()
         {
             const string resourceUri = "https://management.azure.com/providers/Microsoft.Portal/consoles/default?api-version=2018-10-01";
             const string body = @"
@@ -441,7 +422,7 @@ namespace Microsoft.PowerShell.RemotingTools
         }
 
 
-        private void GetDeviceCode()
+        private static void GetDeviceCode()
         {
             string resourceUri = "https://login.microsoftonline.com/common/oauth2/devicecode";
             const string resource = "https://management.core.windows.net/";
