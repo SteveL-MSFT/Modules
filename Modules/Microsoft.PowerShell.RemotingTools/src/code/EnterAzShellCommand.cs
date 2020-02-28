@@ -4,7 +4,9 @@
 using System;
 using System.Buffers;
 using System.Buffers.Text;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Management.Automation;
 using System.Management.Automation.Host;
@@ -139,7 +141,7 @@ namespace Microsoft.PowerShell.RemotingTools
         private static HttpClient _httpClient;
         private static string _accessToken;
         private static string _refreshToken;
-        private static Queue<KeyInfo> _inputQueue;
+        private static ConcurrentQueue<byte[]> _inputQueue;
         private static CancellationTokenSource _cancelTokenSource;
         private ClientWebSocket _socket;
         private bool _stopProcessing = false;
@@ -147,14 +149,30 @@ namespace Microsoft.PowerShell.RemotingTools
         private const string CommonTenant = "common";
         private const string userAgent = "PowerShell.Enter-AzShell";
         private static readonly string[] Scopes = new string[]{"https://management.azure.com/user_impersonation"};
+        private static StreamWriter _log;
 
+        private enum VirtualKeyCode
+        {
+            Left = 37,
+            Up = 38,
+            Right = 39,
+            Down = 40
+        }
+
+        private static readonly Dictionary<VirtualKeyCode, string> VirtualKeyCodeMap = new Dictionary<VirtualKeyCode, string>{
+            { VirtualKeyCode.Up, "\x001bOA" },
+            { VirtualKeyCode.Down, "\x001bOB" },
+            { VirtualKeyCode.Right, "\x001bOC" },
+            { VirtualKeyCode.Left, "\x001bOD" }
+        };
 
         protected override void BeginProcessing()
         {
             _httpClient = new HttpClient();
-            _inputQueue = new Queue<KeyInfo>();
+            _inputQueue = new ConcurrentQueue<byte[]>();
             _socket = new ClientWebSocket();
             _cancelTokenSource = new CancellationTokenSource();
+            _log = new StreamWriter("/Users/steve/test/azshell.log");
         }
 
         protected override void StopProcessing()
@@ -189,16 +207,20 @@ namespace Microsoft.PowerShell.RemotingTools
 
                 while(_inputQueue.Count > 0)
                 {
-                    var key = _inputQueue.Dequeue();
-                    buffer.AddRange(Encoding.UTF8.GetBytes(new char[]{key.Character}));
+                    if (_inputQueue.TryDequeue(out var input))
+                    {
+                        buffer.AddRange(input);
+                    }
                 }
 
-                // Ignore input escape sequences
                 if (buffer.Count > 0)
                 {
+                    _log.WriteLine($"[Send: {BitConverter.ToString(buffer.ToArray())}]");
+                    _log.WriteLine($"[Send: {Encoding.UTF8.GetString(buffer.ToArray(), 0, buffer.Count)}]");
+                    _log.Flush();
                     Task.Run(() => _socket.SendAsync(
                         new ArraySegment<byte>(buffer.ToArray()),
-                        WebSocketMessageType.Binary,
+                        WebSocketMessageType.Text,
                         endOfMessage: true,
                         _cancelTokenSource.Token
                     ));
@@ -221,7 +243,21 @@ namespace Microsoft.PowerShell.RemotingTools
                 while (rawUI.KeyAvailable)
                 {
                     var key = rawUI.ReadKey(ReadKeyOptions.AllowCtrlC | ReadKeyOptions.NoEcho);
-                    _inputQueue.Enqueue(key);
+                    var bytes = Encoding.UTF8.GetBytes(new char[]{key.Character});
+//                    _log.WriteLine($"KeyInput: char {key.Character}, keycode {key.VirtualKeyCode} = {BitConverter.ToString(bytes)}");
+                    if (Enum.IsDefined(typeof(VirtualKeyCode), key.VirtualKeyCode) && VirtualKeyCodeMap.ContainsKey((VirtualKeyCode)key.VirtualKeyCode))
+                    {
+                        bytes = Encoding.UTF8.GetBytes(VirtualKeyCodeMap[(VirtualKeyCode)key.VirtualKeyCode]);
+//                        _log.WriteLine($"KeyMapTo: {BitConverter.ToString(bytes)}");
+                    }
+//                    _log.Flush();
+
+                    if (key.Character == 'q')
+                    {
+                        _log.Close();
+                    }
+
+                    _inputQueue.Enqueue(bytes);
                 }
 
                 Thread.Sleep(5);
@@ -240,7 +276,7 @@ namespace Microsoft.PowerShell.RemotingTools
 
         private async void ReceiveWebSocket()
         {
-            var incomingBuffer = new Byte[1024];
+            var incomingBuffer = new Byte[4096];
             while (!_stopProcessing && !_cancelTokenSource.IsCancellationRequested)
             {
                 try
@@ -251,7 +287,12 @@ namespace Microsoft.PowerShell.RemotingTools
                         result = await _socket.ReceiveAsync(new ArraySegment<byte>(incomingBuffer), _cancelTokenSource.Token);
                         if (result.Count > 0)
                         {
-                            Console.Write(Encoding.UTF8.GetString(incomingBuffer.ToArray()));
+                            byte[] bytes = new byte[result.Count];
+                            Array.Copy(incomingBuffer.ToArray(), bytes, result.Count);
+                            _log.WriteLine($"[Received: {BitConverter.ToString(bytes)}]");
+                            _log.WriteLine($"[Received: {Encoding.UTF8.GetString(incomingBuffer.ToArray(), 0, result.Count)}]");
+                            _log.Flush();
+                            Console.Write(Encoding.UTF8.GetString(incomingBuffer.ToArray(), 0, result.Count));
                             Array.Clear(incomingBuffer, 0, result.Count);
                         }
                     }

@@ -60,12 +60,16 @@ function DoBuild
         # build code and place it in the staging location
         try {
             Push-Location "${SrcPath}/code"
-            $result = dotnet publish
-            copy-item "bin/Debug/netstandard2.0/publish/${ModuleName}.dll" "${OutDirectory}/${ModuleName}"
+            $result = dotnet build
+            if ($LASTEXITCODE -ne 0) {
+                throw "Build failed"
+            }
+
+            copy-item "bin/Debug/netstandard2.0/${ModuleName}.dll" "${OutDirectory}/${ModuleName}" -Force
         }
         catch {
             $result | ForEach-Object { Write-Warning $_ }
-            Write-Error "dotnet build failed"
+            throw "Build failed"
         }
         finally {
             Pop-Location
@@ -86,6 +90,7 @@ if ( ! ( Get-Module -ErrorAction SilentlyContinue PSPackageProject) ) {
 if ($Clean -and (Test-Path $OutDirectory))
 {
     Remove-Item -Force -Recurse $OutDirectory -ErrorAction Stop -Verbose
+    Remove-Item -Force -Recurse "${SrcPath}/code/bin" -ErrorAction Stop
 }
 
 if (-not (Test-Path $OutDirectory))
