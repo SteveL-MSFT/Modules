@@ -22,6 +22,8 @@ using System.Threading.Tasks;
 
 namespace Microsoft.PowerShell.RemotingTools
 {
+    #region JsonTypes
+
     public class IntToStringConverter : JsonConverter<int>
     {
         public override int Read(ref Utf8JsonReader reader, Type type, JsonSerializerOptions options)
@@ -117,6 +119,7 @@ namespace Microsoft.PowerShell.RemotingTools
         public AzureTenant[] value { get; set; }
     }
 
+    #endregion
 
     [Cmdlet(VerbsCommon.Enter, "AzShell")]
     public sealed class EnterAzShellCommand : PSCmdlet
@@ -180,7 +183,16 @@ namespace Microsoft.PowerShell.RemotingTools
             WriteVerbose("Authenticating with Azure...");
             GetDeviceCode();
 
-            string tenantId = GetTenantId();
+            string tenantId;
+            if (TenantId != Guid.Empty)
+            {
+                tenantId = TenantId.ToString();
+            }
+            else
+            {
+                tenantId = GetTenantId();
+            }
+
             RefreshToken(tenantId);
 
             WriteVerbose("Requesting Cloud Shell...");
@@ -190,12 +202,12 @@ namespace Microsoft.PowerShell.RemotingTools
             string socketUri = RequestTerminal(cloudShellUri);
 
             ConnectWebSocket(socketUri);
-                Task.Run(() => ReceiveWebSocket());
+            Task.Run(() => ReceiveWebSocket());
 
             var inputThread = new Thread(() => InputThread(_cancelTokenSource.Token));
             inputThread.Start();
 
-            while(_socket.State != WebSocketState.Closed && _socket.State != WebSocketState.CloseReceived)
+            while(_socket.State == WebSocketState.Open || _socket.State == WebSocketState.Connecting)
             {
                 var buffer = new List<byte>();
 
@@ -232,13 +244,10 @@ namespace Microsoft.PowerShell.RemotingTools
 
             while (!ct.IsCancellationRequested)
             {
-                {
-                    var bytesRead = stdin.Read(buffer, 0, BufferSize);
-                    var bytes = new byte[bytesRead];
-                    Array.Copy(buffer, bytes, bytesRead);
-                    _inputQueue.Enqueue(bytes);
-                }
-
+                var bytesRead = stdin.Read(buffer, 0, BufferSize);
+                var bytes = new byte[bytesRead];
+                Array.Copy(buffer, bytes, bytesRead);
+                _inputQueue.Enqueue(bytes);
                 Thread.Sleep(5);
             }
         }
