@@ -205,6 +205,7 @@ namespace Microsoft.PowerShell.RemotingTools
             Task.Run(() => ReceiveWebSocket());
 
             var inputThread = new Thread(() => InputThread(_cancelTokenSource.Token));
+            inputThread.Name = "Enter-AzShell Input Thread";
             inputThread.Start();
 
             while(_socket.State == WebSocketState.Open || _socket.State == WebSocketState.Connecting)
