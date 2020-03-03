@@ -245,10 +245,14 @@ namespace Microsoft.PowerShell.RemotingTools
 
             while (!ct.IsCancellationRequested)
             {
-                var bytesRead = stdin.Read(buffer, 0, BufferSize);
-                var bytes = new byte[bytesRead];
-                Array.Copy(buffer, bytes, bytesRead);
-                _inputQueue.Enqueue(bytes);
+                // check if a key is available before trying to read stdin which blocks
+                if (Console.KeyAvailable)
+                {
+                    var bytesRead = stdin.Read(buffer, 0, BufferSize);
+                    var bytes = new byte[bytesRead];
+                    Array.Copy(buffer, bytes, bytesRead);
+                    _inputQueue.Enqueue(bytes);
+                }
                 Thread.Sleep(5);
             }
         }
