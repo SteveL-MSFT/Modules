@@ -199,7 +199,8 @@ namespace Microsoft.PowerShell.RemotingTools
             string cloudShellUri = RequestCloudShell();
 
             WriteVerbose("Connecting terminal...");
-            string socketUri = RequestTerminal(cloudShellUri);
+            string id;
+            string socketUri = RequestTerminal(cloudShellUri, out id);
 
             ConnectWebSocket(socketUri);
             Task.Run(() => ReceiveWebSocket());
@@ -208,8 +209,18 @@ namespace Microsoft.PowerShell.RemotingTools
             inputThread.Name = "Enter-AzShell Input Thread";
             inputThread.Start();
 
+            int currentHeight = Console.WindowHeight;
+            int currentWidth = Console.WindowWidth;
+
             while(_socket.State == WebSocketState.Open || _socket.State == WebSocketState.Connecting)
             {
+                if (currentHeight != Console.WindowHeight || currentWidth != Console.WindowWidth)
+                {
+                    ResizeTerminal(cloudShellUri, id);
+                    currentHeight = Console.WindowHeight;
+                    currentWidth = Console.WindowWidth;
+                }
+
                 var buffer = new List<byte>();
 
                 while(_inputQueue.Count > 0)
@@ -364,7 +375,7 @@ namespace Microsoft.PowerShell.RemotingTools
             return JsonSerializer.Deserialize<T>(readOnlySpan);
         }
 
-        private static string RequestTerminal(string uri)
+        private static string RequestTerminal(string uri, out string id)
         {
             string shell = "pwsh";
             if (_shellType == ShellType.Bash)
@@ -382,8 +393,21 @@ namespace Microsoft.PowerShell.RemotingTools
             );
 
             var terminal = ConvertFromJson<CloudShellTerminal>(response);
+            id = terminal.id;
 
             return terminal.socketUri;
+        }
+
+        private static void ResizeTerminal(string uri, string id)
+        {
+            string resourceUri = $"{uri}/terminals/{id}/size?cols={Console.WindowWidth}&rows={Console.WindowHeight}&version=2019-01-01";
+            SendWebRequest(
+                resourceUri: resourceUri,
+                body: string.Empty,
+                contentType: "application/json",
+                token: _accessToken,
+                method: HttpMethod.Post
+            );
         }
 
         private static string GetTenantId()
