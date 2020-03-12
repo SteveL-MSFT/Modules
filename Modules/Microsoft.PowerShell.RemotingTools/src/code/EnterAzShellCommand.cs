@@ -152,6 +152,8 @@ namespace Microsoft.PowerShell.RemotingTools
         private static HttpClient _httpClient;
         private static string _accessToken;
         private static string _refreshToken;
+        private static string _tenantId;
+        private static DateTime _expiresAt;
         private static ShellType _shellType = ShellType.PowerShell;
         private static ConcurrentQueue<byte[]> _inputQueue;
         private static CancellationTokenSource _cancelTokenSource;
@@ -181,19 +183,34 @@ namespace Microsoft.PowerShell.RemotingTools
         protected override void ProcessRecord()
         {
             WriteVerbose("Authenticating with Azure...");
-            GetDeviceCode();
+            if (_accessToken != null && (TenantId == Guid.Empty || TenantId.ToString().Equals(_tenantId, StringComparison.InvariantCultureIgnoreCase)))
+            {
+                try
+                {
+                    WriteVerbose("Refreshing token...");
+                    RefreshToken();
+                }
+                catch
+                {
+                    _accessToken = null;
+                }
+            }
 
-            string tenantId;
+            if (_accessToken == null)
+            {
+                GetDeviceCode();
+            }
+
             if (TenantId != Guid.Empty)
             {
-                tenantId = TenantId.ToString();
+                _tenantId = TenantId.ToString();
             }
             else
             {
-                tenantId = GetTenantId();
+                _tenantId = GetTenantId();
             }
 
-            RefreshToken(tenantId);
+            RefreshToken();
 
             WriteVerbose("Requesting Cloud Shell...");
             string cloudShellUri = RequestCloudShell();
@@ -214,11 +231,18 @@ namespace Microsoft.PowerShell.RemotingTools
 
             while(_socket.State == WebSocketState.Open || _socket.State == WebSocketState.Connecting)
             {
+                // check if the console size has changed
                 if (currentHeight != Console.WindowHeight || currentWidth != Console.WindowWidth)
                 {
                     ResizeTerminal(cloudShellUri, id);
                     currentHeight = Console.WindowHeight;
                     currentWidth = Console.WindowWidth;
+                }
+
+                // check if token is about to expire
+                if (DateTime.Now.AddSeconds(5 * 60) > _expiresAt)
+                {
+                    RefreshToken();
                 }
 
                 var buffer = new List<byte>();
@@ -246,7 +270,15 @@ namespace Microsoft.PowerShell.RemotingTools
 
             _cancelTokenSource.Cancel();
             Task.Run(() => _socket.CloseAsync(WebSocketCloseStatus.NormalClosure, string.Empty, CancellationToken.None));
-            WriteVerbose($"Session closed: {_socket.State} => {_socket.CloseStatus} : {_socket.CloseStatusDescription}");
+
+            if (!string.IsNullOrEmpty(_socket.CloseStatusDescription))
+            {
+                WriteWarning($"Session closed: {_socket.CloseStatus} : {_socket.CloseStatusDescription}");
+            }
+            else
+            {
+                WriteWarning($"Session closed: {_socket.CloseStatus}");
+            }
         }
 
         private static void InputThread(CancellationToken ct)
@@ -349,9 +381,9 @@ namespace Microsoft.PowerShell.RemotingTools
             return response;
         }
 
-        private static void RefreshToken(string tenantId)
+        private static void RefreshToken()
         {
-            string resourceUri = $"https://login.microsoftonline.com/{tenantId}/oauth2/token";
+            string resourceUri = $"https://login.microsoftonline.com/{_tenantId}/oauth2/token";
             const string resource = "https://management.core.windows.net/";
             string encodedResource = Uri.EscapeDataString(resource);
             string body = $"client_id={ClientId}&resource={encodedResource}&grant_type=refresh_token&refresh_token={_refreshToken}";
@@ -367,6 +399,8 @@ namespace Microsoft.PowerShell.RemotingTools
             var authResponse = ConvertFromJson<AuthResponse>(response);
             _accessToken = authResponse.access_token;
             _refreshToken = authResponse.refresh_token;
+            _expiresAt = DateTime.Now.AddSeconds(authResponse.expires_in);
+            Console.WriteLine($"Expires: {_expiresAt}");
         }
 
         private static T ConvertFromJson<T>(string json)
